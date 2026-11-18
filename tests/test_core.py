@@ -117,3 +117,13 @@ def test_quiz_results_export_to_report(isolated_data):
 def test_export_report_without_results_returns_none():
     assert main.export_report("2025001") is None
 
+
+# ---------- theming ----------
+@pytest.mark.parametrize("mode,surface,text", [("Light", "#e4e7eb", "#111827"), ("Dark", "#2b2b2b", "#ffffff")])
+def test_chart_colors_follow_the_active_theme(mode, surface, text):
+    main.ctk.set_appearance_mode(mode)
+    try:
+        assert main.themed("sec") == surface
+        assert main.themed("txt") == text
+    finally:
+        main.ctk.set_appearance_mode("Dark")

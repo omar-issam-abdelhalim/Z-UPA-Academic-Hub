@@ -6,7 +6,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 ctk.set_appearance_mode("Dark"); ctk.set_default_color_theme("dark-blue")
-C = {"pri": "#1f6aa5", "sec": "#2b2b2b", "acc": "#10a37f", "bg": "#1a1a1a", "txt": "#fff", "dang": "#c0392b", "warn": "#e67e22", "succ": "#27ae60"}
+# Surface colors are (light, dark) pairs so every widget follows the active theme.
+C = {"pri": "#1f6aa5", "sec": ("#e4e7eb", "#2b2b2b"), "acc": "#10a37f", "bg": ("#f1f3f5", "#1a1a1a"), "txt": ("#111827", "#ffffff"), "dang": "#c0392b", "warn": "#e67e22", "succ": "#27ae60"}
+
+def themed(key):
+    """Resolve a (light, dark) color for matplotlib, which cannot follow CustomTkinter's theme on its own."""
+    light, dark = C[key]
+    return dark if ctk.get_appearance_mode() == "Dark" else light
 # All runtime data lives in data/ next to this script, whatever the working directory.
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -33,12 +39,14 @@ def get_user_session(uid):
     return next((s for s in load_students_db(FILES['stu']) if s['id'] == uid), None)
 
 def show_main_frame(app, name):
+    app.current_view = name
     views = {"Home": app.view_home, "Courses": app.view_courses, "Services": app.view_services, "Profile": app.view_profile, "Grades": app.view_grades, "Calendar": app.view_calendar, "Notifications": app.view_notifications, "Tasks": app.view_tasks}
     views.get(name, lambda: print(f"View {name} missing"))()
 
 def toggle_theme(app, mode):
     ctk.set_appearance_mode(mode); app.cfg['theme'] = mode
     json.dump(app.cfg, open(FILES['cfg'], 'w'))
+    if app.curr_user: show_main_frame(app, getattr(app, 'current_view', 'Home'))  # redraw charts in the new theme
 
 def logout(app): app.curr_user = None; app.view_login()
 
@@ -168,6 +176,7 @@ class ZUPA_App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.cfg = read_config(FILES['cfg']); self.curr_user = None
+        ctk.set_appearance_mode(self.cfg.get("theme", "Dark"))
         self.title("Z-UPA Academic Hub"); self.geometry("1100x750")
         self.main = ctk.CTkFrame(self, fg_color="transparent"); self.main.pack(fill="both", expand=True)
         self.view_login()
@@ -182,7 +191,7 @@ class ZUPA_App(ctk.CTk):
         btns = [("🏠 Home","Home"), ("📚 Courses","Courses"), ("📊 Grades","Grades"), ("✅ Tasks","Tasks"), 
                 ("📅 Calendar","Calendar"), ("🔔 Alerts","Notifications"), ("🛠 Services","Services"), ("🎓 Profile","Profile")]
         for t, cmd in btns:
-            ctk.CTkButton(sb, text=t, fg_color="transparent", anchor="w", command=lambda c=cmd: show_main_frame(self, c)).pack(fill="x", padx=10, pady=3)
+            ctk.CTkButton(sb, text=t, fg_color="transparent", text_color=C['txt'], hover_color=("#d1d5db", "#333333"), anchor="w", command=lambda c=cmd: show_main_frame(self, c)).pack(fill="x", padx=10, pady=3)
         
         theme_frame = ctk.CTkFrame(sb, fg_color="transparent"); theme_frame.pack(side="bottom", pady=10)
         ctk.CTkButton(theme_frame, text="🌙", width=40, command=lambda: toggle_theme(self, "Dark")).pack(side="left", padx=2)
@@ -229,13 +238,13 @@ class ZUPA_App(ctk.CTk):
         
         if pending + completed > 0:
             fig, ax = plt.subplots(figsize=(6, 2), dpi=100)
-            fig.patch.set_facecolor(C['sec'])
-            ax.set_facecolor(C['sec'])
+            fig.patch.set_facecolor(themed('sec'))
+            ax.set_facecolor(themed('sec'))
             
             wedges, texts, autotexts = ax.pie([pending, completed], labels=['Pending', 'Done'], 
                                               colors=[C['warn'], C['succ']], autopct='%1.1f%%', 
                                               startangle=90, textprops={'color':"white"})
-            for t in texts: t.set_color("white")
+            for t in texts: t.set_color(themed('txt'))
             
             canvas = FigureCanvasTkAgg(fig, master=chart_frame)
             canvas.draw()
@@ -340,23 +349,25 @@ class ZUPA_App(ctk.CTk):
         ctk.CTkLabel(gpa_card, text=f"Current GPA: {gpa}", font=("Arial", 22, "bold")).pack(pady=20)
 
         if grades:
-            crs_names = [g['crs'] for g in grades]
-            scores = [int(g['grade']) for g in grades]
+            by_course = {}
+            for g in grades: by_course.setdefault(g['crs'], []).append(int(g['grade']))
+            crs_names = list(by_course)
+            scores = [sum(v) / len(v) for v in by_course.values()]  # one bar per course: its average
             
             graph_frame = ctk.CTkFrame(scroll, fg_color=C['sec']); graph_frame.pack(fill="x", pady=10)
             ctk.CTkLabel(graph_frame, text="Performance Overview", font=("Arial", 14, "bold")).pack(pady=5)
             
             fig, ax = plt.subplots(figsize=(6, 3), dpi=100)
-            fig.patch.set_facecolor(C['sec']) 
-            ax.set_facecolor(C['sec'])
+            fig.patch.set_facecolor(themed('sec')) 
+            ax.set_facecolor(themed('sec'))
             
             bars = ax.bar(crs_names, scores, color=C['acc'], width=0.4)
-            ax.set_ylabel("Score", color="white")
+            ax.set_ylabel("Average score", color=themed('txt'))
             ax.set_ylim(0, 100)
-            ax.tick_params(axis='x', colors='white')
-            ax.tick_params(axis='y', colors='white')
-            ax.spines['bottom'].set_color('white')
-            ax.spines['left'].set_color('white')
+            ax.tick_params(axis='x', colors=themed('txt'))
+            ax.tick_params(axis='y', colors=themed('txt'))
+            ax.spines['bottom'].set_color(themed('txt'))
+            ax.spines['left'].set_color(themed('txt'))
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
