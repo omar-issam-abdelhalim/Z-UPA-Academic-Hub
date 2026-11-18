@@ -1,13 +1,26 @@
 import customtkinter as ctk
 from tkinter import messagebox
-import os, json, webbrowser
+import os, sys, json, subprocess, webbrowser
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 ctk.set_appearance_mode("Dark"); ctk.set_default_color_theme("dark-blue")
-C = {"pri": "#1f6aa5", "sec": "#2b2b2b", "acc": "#10a37f", "bg": "#1a1a1a", "txt": "#fff", "dang": "#c0392b", "warn": "#e67e22", "succ": "#27ae60"}
-FILES = {"cfg": "config.json", "stu": "students.txt", "crs": "courses.txt", "res": "results.txt", "svc": "services.txt", "cmp": "complaints.txt", "ntf": "notifications.txt", "tsk": "tasks.txt", "grd": "grades.txt", "cal": "calendar.txt", "att": "attendance.txt"}
+# Surface colors are (light, dark) pairs so every widget follows the active theme.
+C = {"pri": "#1f6aa5", "sec": ("#e4e7eb", "#2b2b2b"), "acc": "#10a37f", "bg": ("#f1f3f5", "#1a1a1a"), "txt": ("#111827", "#ffffff"), "dang": "#c0392b", "warn": "#e67e22", "succ": "#27ae60"}
+
+def themed(key):
+    """Resolve a (light, dark) color for matplotlib, which cannot follow CustomTkinter's theme on its own."""
+    light, dark = C[key]
+    return dark if ctk.get_appearance_mode() == "Dark" else light
+# All runtime data lives in data/ next to this script, whatever the working directory.
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+FILES = {k: os.path.join(DATA_DIR, v) for k, v in {"cfg": "config.json", "stu": "students.txt", "crs": "courses.txt", "res": "results.txt", "svc": "services.txt", "cmp": "complaints.txt", "ntf": "notifications.txt", "tsk": "tasks.txt", "grd": "grades.txt", "cal": "calendar.txt", "att": "attendance.txt"}.items()}
+
+def owner(line):
+    """Student ID of a comma-separated record (its first field), compared exactly — never by prefix."""
+    return line.split(',', 1)[0].strip()
 
 def read_config(f): 
     if not os.path.exists(f): json.dump({"theme": "Dark"}, open(f, 'w'))
@@ -26,12 +39,14 @@ def get_user_session(uid):
     return next((s for s in load_students_db(FILES['stu']) if s['id'] == uid), None)
 
 def show_main_frame(app, name):
+    app.current_view = name
     views = {"Home": app.view_home, "Courses": app.view_courses, "Services": app.view_services, "Profile": app.view_profile, "Grades": app.view_grades, "Calendar": app.view_calendar, "Notifications": app.view_notifications, "Tasks": app.view_tasks}
     views.get(name, lambda: print(f"View {name} missing"))()
 
 def toggle_theme(app, mode):
     ctk.set_appearance_mode(mode); app.cfg['theme'] = mode
     json.dump(app.cfg, open(FILES['cfg'], 'w'))
+    if app.curr_user: show_main_frame(app, getattr(app, 'current_view', 'Home'))  # redraw charts in the new theme
 
 def logout(app): app.curr_user = None; app.view_login()
 
@@ -53,7 +68,10 @@ def open_link(url): webbrowser.open(url)
 def get_labs(code): 
     return {"CSAI 101": ["Lab1_Basics.pdf", "Lab2_Loops.pdf"], "CSAI 201": ["Lab_Arrays.pdf"], "PHYS 102": ["Lab_Exp1.pdf"]}.get(code, [])
 
-def open_pdf(path): os.startfile(path) if os.path.exists(path) else messagebox.showinfo("Demo", f"Opening {path}")
+def open_pdf(path):
+    if not os.path.exists(path): return messagebox.showinfo("Demo", f"Opening {path}")
+    if sys.platform.startswith("win"): os.startfile(path)
+    else: subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
 
 def search_course(kw): 
     return [c for c in load_courses(FILES['crs']) if kw.lower() in c['code'].lower() or kw.lower() in c['name'].lower()]
@@ -77,13 +95,14 @@ def reset_form(frm): [w.deselect() for w in frm.winfo_children() if isinstance(w
 
 def export_report(sid):
     if not os.path.exists(FILES['res']): return None
-    data = [l for l in open(FILES['res']) if l.startswith(sid)]
-    if data: open(f"Report_{sid}.txt", 'w').write("".join(data)); return f"Report_{sid}.txt"
+    data = [l for l in open(FILES['res']) if owner(l) == sid]
+    if data:
+        out = os.path.join(DATA_DIR, f"Report_{sid}.txt"); open(out, 'w').write("".join(data)); return out
 
 def load_notifications(sid):
     if not os.path.exists(FILES['ntf']): 
         open(FILES['ntf'], 'w').write("all,New semester started!,2025-01-01\nall,Exam schedule released,2025-01-05")
-    return [dict(zip(['sid','msg','date'], l.strip().split(','))) for l in open(FILES['ntf']) if l.strip() and (l.startswith('all') or l.startswith(sid))]
+    return [dict(zip(['sid','msg','date'], l.strip().split(','))) for l in open(FILES['ntf']) if l.strip() and owner(l) in ('all', sid)]
 
 def add_notification(sid, msg): open(FILES['ntf'], 'a').write(f"{sid},{msg},{datetime.now().strftime('%Y-%m-%d')}\n")
 
@@ -98,13 +117,14 @@ def update_task_status(sid, task, status):
     lines = open(FILES['tsk']).readlines()
     with open(FILES['tsk'], 'w') as f:
         for l in lines:
-            if task in l and (sid in l or 'all' in l): f.write(l.replace(l.split(',')[4], f"{status}\n"))
+            p = l.rstrip('\n').split(',')
+            if len(p) == 5 and p[2] == task and p[0] in (sid, 'all'): p[4] = status; f.write(','.join(p) + '\n')
             else: f.write(l)
 
 def load_grades(sid):
     if not os.path.exists(FILES['grd']): 
         open(FILES['grd'], 'w').write("202508134,CSAI 101,Quiz1,85,2025-01-15\n202508134,MATH 103,Midterm,78,2025-01-20")
-    return [dict(zip(['sid','crs','type','grade','date'], l.strip().split(','))) for l in open(FILES['grd']) if l.strip() and l.startswith(sid)]
+    return [dict(zip(['sid','crs','type','grade','date'], l.strip().split(','))) for l in open(FILES['grd']) if l.strip() and owner(l) == sid]
 
 def calc_gpa(grades):
     if not grades: return 0.0
@@ -129,7 +149,8 @@ def change_password(sid, old_pw, new_pw):
             lines = open(FILES['stu']).readlines()
             with open(FILES['stu'], 'w') as f:
                 for l in lines:
-                    if l.startswith(sid): f.write(l.replace(old_pw, new_pw))
+                    p = l.rstrip('\n').split(',')
+                    if p[0] == sid: p[1] = new_pw; f.write(','.join(p) + '\n')
                     else: f.write(l)
             return True
     return False
@@ -137,7 +158,7 @@ def change_password(sid, old_pw, new_pw):
 def load_attendance(sid):
     if not os.path.exists(FILES['att']): 
         open(FILES['att'], 'w').write("202508134,CSAI 101,2025-01-10,present\n202508134,CSAI 101,2025-01-12,present\n202508134,MATH 103,2025-01-11,absent")
-    att = [dict(zip(['sid','crs','date','status'], l.strip().split(','))) for l in open(FILES['att']) if l.strip() and l.startswith(sid)]
+    att = [dict(zip(['sid','crs','date','status'], l.strip().split(','))) for l in open(FILES['att']) if l.strip() and owner(l) == sid]
     return att
 
 def calc_attendance_rate(sid, crs):
@@ -155,6 +176,7 @@ class ZUPA_App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.cfg = read_config(FILES['cfg']); self.curr_user = None
+        ctk.set_appearance_mode(self.cfg.get("theme", "Dark"))
         self.title("Z-UPA Academic Hub"); self.geometry("1100x750")
         self.main = ctk.CTkFrame(self, fg_color="transparent"); self.main.pack(fill="both", expand=True)
         self.view_login()
@@ -169,7 +191,7 @@ class ZUPA_App(ctk.CTk):
         btns = [("🏠 Home","Home"), ("📚 Courses","Courses"), ("📊 Grades","Grades"), ("✅ Tasks","Tasks"), 
                 ("📅 Calendar","Calendar"), ("🔔 Alerts","Notifications"), ("🛠 Services","Services"), ("🎓 Profile","Profile")]
         for t, cmd in btns:
-            ctk.CTkButton(sb, text=t, fg_color="transparent", anchor="w", command=lambda c=cmd: show_main_frame(self, c)).pack(fill="x", padx=10, pady=3)
+            ctk.CTkButton(sb, text=t, fg_color="transparent", text_color=C['txt'], hover_color=("#d1d5db", "#333333"), anchor="w", command=lambda c=cmd: show_main_frame(self, c)).pack(fill="x", padx=10, pady=3)
         
         theme_frame = ctk.CTkFrame(sb, fg_color="transparent"); theme_frame.pack(side="bottom", pady=10)
         ctk.CTkButton(theme_frame, text="🌙", width=40, command=lambda: toggle_theme(self, "Dark")).pack(side="left", padx=2)
@@ -216,13 +238,13 @@ class ZUPA_App(ctk.CTk):
         
         if pending + completed > 0:
             fig, ax = plt.subplots(figsize=(6, 2), dpi=100)
-            fig.patch.set_facecolor(C['sec'])
-            ax.set_facecolor(C['sec'])
+            fig.patch.set_facecolor(themed('sec'))
+            ax.set_facecolor(themed('sec'))
             
             wedges, texts, autotexts = ax.pie([pending, completed], labels=['Pending', 'Done'], 
                                               colors=[C['warn'], C['succ']], autopct='%1.1f%%', 
                                               startangle=90, textprops={'color':"white"})
-            for t in texts: t.set_color("white")
+            for t in texts: t.set_color(themed('txt'))
             
             canvas = FigureCanvasTkAgg(fig, master=chart_frame)
             canvas.draw()
@@ -292,7 +314,7 @@ class ZUPA_App(ctk.CTk):
 
     def view_quiz(self, c):
         self.clear(); content = self.sidebar(); content.pack(side="right", fill="both", expand=True)
-        qf = f"{c['code'].replace(' ','')}_quiz1.txt"
+        qf = os.path.join(DATA_DIR, f"{c['code'].replace(' ','')}_quiz1.txt")
         if not os.path.exists(qf): open(qf, 'w').write(f"Sample Question for {c['name']}?|Option A|Option B|Option C|Option D|A")
         
         qs = load_quiz(qf); vars = []
@@ -327,23 +349,25 @@ class ZUPA_App(ctk.CTk):
         ctk.CTkLabel(gpa_card, text=f"Current GPA: {gpa}", font=("Arial", 22, "bold")).pack(pady=20)
 
         if grades:
-            crs_names = [g['crs'] for g in grades]
-            scores = [int(g['grade']) for g in grades]
+            by_course = {}
+            for g in grades: by_course.setdefault(g['crs'], []).append(int(g['grade']))
+            crs_names = list(by_course)
+            scores = [sum(v) / len(v) for v in by_course.values()]  # one bar per course: its average
             
             graph_frame = ctk.CTkFrame(scroll, fg_color=C['sec']); graph_frame.pack(fill="x", pady=10)
             ctk.CTkLabel(graph_frame, text="Performance Overview", font=("Arial", 14, "bold")).pack(pady=5)
             
             fig, ax = plt.subplots(figsize=(6, 3), dpi=100)
-            fig.patch.set_facecolor(C['sec']) 
-            ax.set_facecolor(C['sec'])
+            fig.patch.set_facecolor(themed('sec')) 
+            ax.set_facecolor(themed('sec'))
             
             bars = ax.bar(crs_names, scores, color=C['acc'], width=0.4)
-            ax.set_ylabel("Score", color="white")
+            ax.set_ylabel("Average score", color=themed('txt'))
             ax.set_ylim(0, 100)
-            ax.tick_params(axis='x', colors='white')
-            ax.tick_params(axis='y', colors='white')
-            ax.spines['bottom'].set_color('white')
-            ax.spines['left'].set_color('white')
+            ax.tick_params(axis='x', colors=themed('txt'))
+            ax.tick_params(axis='y', colors=themed('txt'))
+            ax.spines['bottom'].set_color(themed('txt'))
+            ax.spines['left'].set_color(themed('txt'))
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 

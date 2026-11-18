@@ -1,4 +1,2 @@
-customtkinter
-matplotlib
-
-
+customtkinter>=5.2
+matplotlib>=3.7
