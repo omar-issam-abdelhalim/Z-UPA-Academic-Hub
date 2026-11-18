@@ -1,13 +1,20 @@
 import customtkinter as ctk
 from tkinter import messagebox
-import os, json, webbrowser
+import os, sys, json, subprocess, webbrowser
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 ctk.set_appearance_mode("Dark"); ctk.set_default_color_theme("dark-blue")
 C = {"pri": "#1f6aa5", "sec": "#2b2b2b", "acc": "#10a37f", "bg": "#1a1a1a", "txt": "#fff", "dang": "#c0392b", "warn": "#e67e22", "succ": "#27ae60"}
-FILES = {"cfg": "config.json", "stu": "students.txt", "crs": "courses.txt", "res": "results.txt", "svc": "services.txt", "cmp": "complaints.txt", "ntf": "notifications.txt", "tsk": "tasks.txt", "grd": "grades.txt", "cal": "calendar.txt", "att": "attendance.txt"}
+# All runtime data lives in data/ next to this script, whatever the working directory.
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+FILES = {k: os.path.join(DATA_DIR, v) for k, v in {"cfg": "config.json", "stu": "students.txt", "crs": "courses.txt", "res": "results.txt", "svc": "services.txt", "cmp": "complaints.txt", "ntf": "notifications.txt", "tsk": "tasks.txt", "grd": "grades.txt", "cal": "calendar.txt", "att": "attendance.txt"}.items()}
+
+def owner(line):
+    """Student ID of a comma-separated record (its first field), compared exactly — never by prefix."""
+    return line.split(',', 1)[0].strip()
 
 def read_config(f): 
     if not os.path.exists(f): json.dump({"theme": "Dark"}, open(f, 'w'))
@@ -53,7 +60,10 @@ def open_link(url): webbrowser.open(url)
 def get_labs(code): 
     return {"CSAI 101": ["Lab1_Basics.pdf", "Lab2_Loops.pdf"], "CSAI 201": ["Lab_Arrays.pdf"], "PHYS 102": ["Lab_Exp1.pdf"]}.get(code, [])
 
-def open_pdf(path): os.startfile(path) if os.path.exists(path) else messagebox.showinfo("Demo", f"Opening {path}")
+def open_pdf(path):
+    if not os.path.exists(path): return messagebox.showinfo("Demo", f"Opening {path}")
+    if sys.platform.startswith("win"): os.startfile(path)
+    else: subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
 
 def search_course(kw): 
     return [c for c in load_courses(FILES['crs']) if kw.lower() in c['code'].lower() or kw.lower() in c['name'].lower()]
@@ -77,13 +87,14 @@ def reset_form(frm): [w.deselect() for w in frm.winfo_children() if isinstance(w
 
 def export_report(sid):
     if not os.path.exists(FILES['res']): return None
-    data = [l for l in open(FILES['res']) if l.startswith(sid)]
-    if data: open(f"Report_{sid}.txt", 'w').write("".join(data)); return f"Report_{sid}.txt"
+    data = [l for l in open(FILES['res']) if owner(l) == sid]
+    if data:
+        out = os.path.join(DATA_DIR, f"Report_{sid}.txt"); open(out, 'w').write("".join(data)); return out
 
 def load_notifications(sid):
     if not os.path.exists(FILES['ntf']): 
         open(FILES['ntf'], 'w').write("all,New semester started!,2025-01-01\nall,Exam schedule released,2025-01-05")
-    return [dict(zip(['sid','msg','date'], l.strip().split(','))) for l in open(FILES['ntf']) if l.strip() and (l.startswith('all') or l.startswith(sid))]
+    return [dict(zip(['sid','msg','date'], l.strip().split(','))) for l in open(FILES['ntf']) if l.strip() and owner(l) in ('all', sid)]
 
 def add_notification(sid, msg): open(FILES['ntf'], 'a').write(f"{sid},{msg},{datetime.now().strftime('%Y-%m-%d')}\n")
 
@@ -98,13 +109,14 @@ def update_task_status(sid, task, status):
     lines = open(FILES['tsk']).readlines()
     with open(FILES['tsk'], 'w') as f:
         for l in lines:
-            if task in l and (sid in l or 'all' in l): f.write(l.replace(l.split(',')[4], f"{status}\n"))
+            p = l.rstrip('\n').split(',')
+            if len(p) == 5 and p[2] == task and p[0] in (sid, 'all'): p[4] = status; f.write(','.join(p) + '\n')
             else: f.write(l)
 
 def load_grades(sid):
     if not os.path.exists(FILES['grd']): 
         open(FILES['grd'], 'w').write("202508134,CSAI 101,Quiz1,85,2025-01-15\n202508134,MATH 103,Midterm,78,2025-01-20")
-    return [dict(zip(['sid','crs','type','grade','date'], l.strip().split(','))) for l in open(FILES['grd']) if l.strip() and l.startswith(sid)]
+    return [dict(zip(['sid','crs','type','grade','date'], l.strip().split(','))) for l in open(FILES['grd']) if l.strip() and owner(l) == sid]
 
 def calc_gpa(grades):
     if not grades: return 0.0
@@ -129,7 +141,8 @@ def change_password(sid, old_pw, new_pw):
             lines = open(FILES['stu']).readlines()
             with open(FILES['stu'], 'w') as f:
                 for l in lines:
-                    if l.startswith(sid): f.write(l.replace(old_pw, new_pw))
+                    p = l.rstrip('\n').split(',')
+                    if p[0] == sid: p[1] = new_pw; f.write(','.join(p) + '\n')
                     else: f.write(l)
             return True
     return False
@@ -137,7 +150,7 @@ def change_password(sid, old_pw, new_pw):
 def load_attendance(sid):
     if not os.path.exists(FILES['att']): 
         open(FILES['att'], 'w').write("202508134,CSAI 101,2025-01-10,present\n202508134,CSAI 101,2025-01-12,present\n202508134,MATH 103,2025-01-11,absent")
-    att = [dict(zip(['sid','crs','date','status'], l.strip().split(','))) for l in open(FILES['att']) if l.strip() and l.startswith(sid)]
+    att = [dict(zip(['sid','crs','date','status'], l.strip().split(','))) for l in open(FILES['att']) if l.strip() and owner(l) == sid]
     return att
 
 def calc_attendance_rate(sid, crs):
@@ -292,7 +305,7 @@ class ZUPA_App(ctk.CTk):
 
     def view_quiz(self, c):
         self.clear(); content = self.sidebar(); content.pack(side="right", fill="both", expand=True)
-        qf = f"{c['code'].replace(' ','')}_quiz1.txt"
+        qf = os.path.join(DATA_DIR, f"{c['code'].replace(' ','')}_quiz1.txt")
         if not os.path.exists(qf): open(qf, 'w').write(f"Sample Question for {c['name']}?|Option A|Option B|Option C|Option D|A")
         
         qs = load_quiz(qf); vars = []
